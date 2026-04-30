@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:handsingdetection/theme/app_theme.dart';
 
 class BottomNavigationAI extends StatelessWidget {
   final int currentIndex;
@@ -8,34 +9,46 @@ class BottomNavigationAI extends StatelessWidget {
   const BottomNavigationAI({
     super.key,
     required this.currentIndex,
-    required this.onTap, required String currentScreen, required Null Function(String p1) onNavigate,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
+    final c = context.colors;
+
     final navItems = [
-      {'icon': Icons.home_rounded, 'label': 'Home'},
-      {'icon': Icons.history_rounded, 'label': 'History'},
+      {'icon': Icons.home_rounded,     'label': 'Home'},
       {'icon': Icons.settings_rounded, 'label': 'Settings'},
     ];
 
-    return ClipRRect(
-        borderRadius: BorderRadius.circular(24),
+    return SafeArea(
+      top: false,
+      child: ClipRRect(
+        borderRadius: const BorderRadius.only(
+          topLeft:  Radius.circular(24),
+          topRight: Radius.circular(24),
+        ),
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
           child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 12),
+            padding:
+            const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.08),
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(
-                color: Colors.white.withOpacity(0.2),
+              color: c.navBg,
+              borderRadius: const BorderRadius.only(
+                topLeft:  Radius.circular(24),
+                topRight: Radius.circular(24),
+              ),
+              border: Border(
+                top: BorderSide(color: c.navBorder, width: 1),
               ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.4),
+                  color: c.isDark
+                      ? Colors.black.withOpacity(0.4)
+                      : Colors.black.withOpacity(0.08),
                   blurRadius: 20,
-                  offset: const Offset(0, 10),
+                  offset: const Offset(0, -4),
                 ),
               ],
             ),
@@ -49,16 +62,14 @@ class BottomNavigationAI extends StatelessWidget {
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 300),
                     padding: const EdgeInsets.symmetric(
-                        vertical: 8, horizontal: 16),
+                        vertical: 8, horizontal: 24),
                     decoration: isActive
                         ? BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [
-                          Color(0xFF00FFFF),
-                          Color(0xFF6A5ACD),
-                        ],
-                      ),
+                      color: c.accentSoft,
                       borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                          color: c.accent.withOpacity(0.4),
+                          width: 1),
                     )
                         : null,
                     child: Column(
@@ -67,9 +78,7 @@ class BottomNavigationAI extends StatelessWidget {
                         Icon(
                           navItems[index]['icon'] as IconData,
                           size: 22,
-                          color: isActive
-                              ? const Color(0xFF00FFFF)
-                              : Colors.grey.shade400,
+                          color: isActive ? c.accent : c.textMuted,
                         ),
                         const SizedBox(height: 4),
                         Text(
@@ -77,18 +86,15 @@ class BottomNavigationAI extends StatelessWidget {
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w500,
-                            color: isActive
-                                ? const Color(0xFF00FFFF)
-                                : Colors.grey.shade400,
+                            color: isActive ? c.accent : c.textMuted,
                           ),
                         ),
                         if (isActive)
                           Container(
                             margin: const EdgeInsets.only(top: 4),
-                            width: 4,
-                            height: 4,
-                            decoration: const BoxDecoration(
-                              color: Color(0xFF00FFFF),
+                            width: 4, height: 4,
+                            decoration: BoxDecoration(
+                              color: c.accent,
                               shape: BoxShape.circle,
                             ),
                           ),
@@ -100,6 +106,7 @@ class BottomNavigationAI extends StatelessWidget {
             ),
           ),
         ),
+      ),
     );
   }
 }

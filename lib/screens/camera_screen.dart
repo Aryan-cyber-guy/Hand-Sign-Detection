@@ -1,8 +1,13 @@
-import 'dart:io';
+import 'dart:async';
+import 'dart:typed_data';
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
 import 'package:handsingdetection/services/api_service.dart';
 import 'package:handsingdetection/services/camera_service.dart';
+import 'package:handsingdetection/theme/haptic_provider.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -11,354 +16,369 @@ class CameraScreen extends StatefulWidget {
   State<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraScreenState extends State<CameraScreen> {
-  late CameraService _cameraService;
+class _CameraScreenState extends State<CameraScreen>
+    with TickerProviderStateMixin {
+  final CameraService _cameraService = CameraService();
+
+  final String _userId = 'user_${DateTime.now().millisecondsSinceEpoch}';
+
   bool _isLoading = true;
-  bool _isCapturing = false;
+  bool _isFrontCamera = true;
+  bool _isFlashOn = false;
+  bool _isSwitching = false;
+
+  bool _isLive = false;
+  bool _isSendingFrame = false;
+
   String? _prediction;
-  double _confidence = 0.0;
+  String? _lastPrediction;
+
+  bool _handVisible = false;
+  bool _bufferReady = false;
+  int _frameCount = 0;
+
+  static const int _frameIntervalMs = 700;
+  DateTime _lastFrameSent = DateTime(2000);
+
+  int _fps = 0;
+  int _fpsRawCount = 0;
+  Timer? _fpsTimer;
+  Timer? _webTimer;
+
+  late AnimationController _switchAnimCtrl;
+  late Animation<double> _switchRotAnim;
+  late AnimationController _pulseCtrl;
+  late Animation<double> _pulseAnim;
 
   @override
   void initState() {
     super.initState();
-    _initializeCamera();
+    _setupAnimations();
+    _initCamera();
   }
 
-  Future<void> _initializeCamera() async {
-    _cameraService = CameraService();
-    try {
-      await _cameraService.initializeFrontCamera();
-      setState(() {
-        _isLoading = false;
-      });
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to initialize camera: $e')),
-        );
-      }
-    }
-  }
+  void _setupAnimations() {
+    _switchAnimCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 450),
+    );
 
-  Future<void> _captureAndPredict() async {
-    if (_isCapturing || _cameraService.controller == null) return;
+    _switchRotAnim = Tween<double>(
+      begin: 0,
+      end: 1,
+    ).animate(_switchAnimCtrl);
 
-    setState(() {
-      _isCapturing = true;
-      _prediction = null;
-      _confidence = 0.0;
-    });
+    _pulseCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
 
-    try {
-      final image = await _cameraService.takePicture();
-      if (image != null) {
-        final imageBytes = await File(image.path).readAsBytes();
-
-        // Check server health first
-        final serverHealthy = await ApiService.checkServerHealth();
-        if (!serverHealthy && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Server is unavailable')),
-          );
-          setState(() {
-            _isCapturing = false;
-          });
-          return;
-        }
-
-        // Send to backend for prediction
-        final result = await ApiService.predictGesture(imageBytes);
-
-        if (mounted) {
-          setState(() {
-            _prediction = result['gesture'] ?? result['label'] ?? 'Unknown';
-            _confidence = (result['confidence'] as num?)?.toDouble() ?? 0.0;
-            _isCapturing = false;
-          });
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Detected: $_prediction (${(_confidence * 100).toStringAsFixed(1)}%)',
-              ),
-              duration: const Duration(seconds: 2),
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
-        );
-        setState(() {
-          _isCapturing = false;
-        });
-      }
-    }
+    _pulseAnim = Tween<double>(
+      begin: 0.85,
+      end: 1,
+    ).animate(_pulseCtrl);
   }
 
   @override
   void dispose() {
+    _fpsTimer?.cancel();
+    _webTimer?.cancel();
     _cameraService.dispose();
+    _switchAnimCtrl.dispose();
+    _pulseCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _initCamera() async {
+    await _cameraService.initializeFrontCamera();
+
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _switchCamera() async {
+    if (_isSwitching) return;
+
+    _switchAnimCtrl.forward(from: 0);
+
+    setState(() => _isSwitching = true);
+
+    if (_isFrontCamera) {
+      await _cameraService.initializeBackCamera();
+    } else {
+      await _cameraService.initializeFrontCamera();
+    }
+
+    if (mounted) {
+      setState(() {
+        _isFrontCamera = !_isFrontCamera;
+        _isSwitching = false;
+      });
+    }
+  }
+
+  Future<void> _toggleFlash() async {
+    if (_isFrontCamera) return;
+
+    final newMode = _isFlashOn ? FlashMode.off : FlashMode.torch;
+
+    await _cameraService.setFlashMode(newMode);
+
+    setState(() {
+      _isFlashOn = !_isFlashOn;
+    });
+  }
+
+  Future<void> _toggleStream() async {
+    _isLive ? await _stopStream() : await _startStream();
+  }
+
+  Future<void> _startStream() async {
+    final healthy = await ApiService.checkServerHealth();
+
+    if (!healthy) {
+      _showSnack("Server unreachable");
+      return;
+    }
+
+    setState(() {
+      _isLive = true;
+      _prediction = null;
+      _fps = 0;
+      _fpsRawCount = 0;
+    });
+
+    _fpsTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) {
+        setState(() {
+          _fps = _fpsRawCount;
+          _fpsRawCount = 0;
+        });
+      }
+    });
+
+    if (kIsWeb) {
+      _webTimer = Timer.periodic(
+        const Duration(milliseconds: 1000),
+            (_) => _captureAndSendWeb(),
+      );
+    } else {
+      await _cameraService.startImageStream(_onCameraFrame);
+    }
+  }
+
+  Future<void> _stopStream() async {
+    _fpsTimer?.cancel();
+    _webTimer?.cancel();
+
+    if (!kIsWeb) {
+      await _cameraService.stopImageStream();
+    }
+
+    setState(() {
+      _isLive = false;
+    });
+  }
+
+  void _onCameraFrame(CameraImage image) async {
+    final haptic = context.read<HapticProvider>();
+
+    _fpsRawCount++;
+
+    final now = DateTime.now();
+
+    if (_isSendingFrame ||
+        now.difference(_lastFrameSent).inMilliseconds < _frameIntervalMs) {
+      return;
+    }
+
+    _lastFrameSent = now;
+    _isSendingFrame = true;
+
+    try {
+      Uint8List jpeg = image.planes[0].bytes;
+
+      final result = await ApiService.predictFrame(
+        jpegBytes: jpeg,
+        userId: _userId,
+      );
+
+      if (mounted && result != null) {
+        final newPrediction = result['prediction'];
+
+        if (haptic.enabled &&
+            newPrediction != null &&
+            newPrediction != _lastPrediction) {
+          HapticFeedback.mediumImpact();
+        }
+
+        _lastPrediction = newPrediction;
+
+        setState(() {
+          _prediction = newPrediction;
+          _handVisible = result['hand_visible'] ?? false;
+          _bufferReady = result['buffer_ready'] ?? false;
+          _frameCount = result['frame_count'] ?? 0;
+        });
+      }
+    } catch (_) {}
+
+    _isSendingFrame = false;
+  }
+
+  Future<void> _captureAndSendWeb() async {
+    if (_isSendingFrame) return;
+
+    _isSendingFrame = true;
+
+    final file = await _cameraService.captureImage();
+
+    if (file == null) {
+      _isSendingFrame = false;
+      return;
+    }
+
+    final bytes = await file.readAsBytes();
+
+    final result = await ApiService.predictFrame(
+      jpegBytes: bytes,
+      userId: _userId,
+    );
+
+    if (mounted && result != null) {
+      setState(() {
+        _prediction = result['prediction'];
+      });
+    }
+
+    _isSendingFrame = false;
+  }
+
+  void _showSnack(String msg) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
-        Navigator.of(context).pop();
-        return false;
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: _isLoading
-            ? const Center(
-                child: CircularProgressIndicator(color: Colors.cyanAccent),
-              )
-            : _buildCameraView(),
-      ),
-    );
-  }
+    final ctrl = _cameraService.controller;
 
-  Widget _buildCameraView() {
-    if (_cameraService.controller == null ||
-        !_cameraService.isCameraInitialized) {
-      return const Center(
-        child: Text('Camera failed to initialize'),
+    if (_isLoading || ctrl == null || !ctrl.value.isInitialized) {
+      return const Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(child: CircularProgressIndicator()),
       );
     }
 
-    return Stack(
-      children: [
-        // Camera Preview
-        Center(
-          child: CameraPreview(_cameraService.controller!),
-        ),
-
-        // Top Bar
-        Positioned(
-          top: 0,
-          left: 0,
-          right: 0,
-          child: SafeArea(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  GestureDetector(
-                    onTap: () => Navigator.of(context).pop(),
-                    child: Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        borderRadius: BorderRadius.circular(50),
-                      ),
-                      child: const Icon(
-                        Icons.arrow_back,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 15,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.cyan.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: Colors.cyanAccent,
-                        width: 1,
-                      ),
-                    ),
-                    child: const Text(
-                      'Live Detection',
-                      style: TextStyle(
-                        color: Colors.cyanAccent,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: Transform(
+              alignment: Alignment.center,
+              transform: _isFrontCamera
+                  ? (Matrix4.identity()..scale(-1.0, 1.0, 1.0))
+                  : Matrix4.identity(),
+              child: CameraPreview(ctrl),
             ),
           ),
-        ),
 
-        // Prediction Result Box (if available)
-        if (_prediction != null)
+          Positioned(
+            top: 40,
+            left: 20,
+            child: FloatingActionButton.small(
+              backgroundColor: Colors.black54,
+              onPressed: () => Navigator.pop(context),
+              child: const Icon(Icons.arrow_back),
+            ),
+          ),
+
+          Positioned(
+            top: 40,
+            right: 20,
+            child: FloatingActionButton.small(
+              backgroundColor: Colors.black54,
+              onPressed: _toggleFlash,
+              child: Icon(_isFlashOn ? Icons.flash_on : Icons.flash_off),
+            ),
+          ),
+
           Positioned(
             top: 100,
             left: 20,
             right: 20,
             child: Container(
-              padding: const EdgeInsets.all(15),
+              padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: Colors.black87,
-                borderRadius: BorderRadius.circular(15),
-                border: Border.all(
-                  color: Colors.greenAccent,
-                  width: 2,
+                color: Colors.black54,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Text(
+                _prediction ?? "No detection",
+                style: TextStyle(
+                  color: _handVisible ? Colors.greenAccent : Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
                 ),
               ),
-              child: Column(
-                children: [
-                  const Text(
-                    'Gesture Detected',
-                    style: TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _prediction!,
-                    style: const TextStyle(
-                      color: Colors.greenAccent,
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: LinearProgressIndicator(
-                      value: _confidence,
-                      minHeight: 8,
-                      backgroundColor: Colors.white12,
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        _confidence > 0.8
-                            ? Colors.green
-                            : _confidence > 0.6
-                                ? Colors.orange
-                                : Colors.red,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Confidence: ${(_confidence * 100).toStringAsFixed(1)}%',
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
+            ),
+          ),
+
+          Positioned(
+            bottom: 50,
+            left: 40,
+            child: RotationTransition(
+              turns: _switchRotAnim,
+              child: FloatingActionButton(
+                backgroundColor: Colors.black54,
+                onPressed: _switchCamera,
+                child: const Icon(Icons.flip_camera_ios),
               ),
             ),
           ),
 
-        // Bottom Controls
-        Positioned(
-          bottom: 0,
-          left: 0,
-          right: 0,
-          child: SafeArea(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  // Flash Button
-                  GestureDetector(
-                    onTap: () async {
-                      try {
-                        await _cameraService.setFlashMode(FlashMode.torch);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Flash toggled')),
-                        );
-                      } catch (e) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Error: $e')),
-                        );
-                      }
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.all(15),
-                      decoration: BoxDecoration(
-                        color: Colors.white12,
-                        borderRadius: BorderRadius.circular(50),
-                      ),
-                      child: const Icon(
-                        Icons.flash_on,
-                        color: Colors.yellow,
-                        size: 24,
-                      ),
+          Positioned(
+            bottom: 50,
+            right: 40,
+            child: ScaleTransition(
+              scale: _pulseAnim,
+              child: FloatingActionButton.large(
+                backgroundColor: _isLive ? Colors.red : Colors.green,
+                onPressed: _toggleStream,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(_isLive ? Icons.stop : Icons.play_arrow),
+                    Text(
+                      _isLive ? "LIVE" : "START",
+                      style: const TextStyle(fontSize: 10),
                     ),
-                  ),
-
-                  // Capture Button
-                  GestureDetector(
-                    onTap: _isCapturing ? null : _captureAndPredict,
-                    child: Container(
-                      width: 70,
-                      height: 70,
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          colors: [
-                            Color(0xFF00FFFF),
-                            Color(0xFF8A2BE2),
-                          ],
-                        ),
-                        borderRadius: BorderRadius.circular(50),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.cyanAccent.withOpacity(0.6),
-                            blurRadius: 20,
-                          )
-                        ],
-                      ),
-                      child: Center(
-                        child: _isCapturing
-                            ? const SizedBox(
-                                width: 30,
-                                height: 30,
-                                child: CircularProgressIndicator(
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                    Colors.white,
-                                  ),
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : const Icon(
-                                Icons.camera_alt,
-                                color: Colors.white,
-                                size: 30,
-                              ),
-                      ),
-                    ),
-                  ),
-
-                  // Settings Button
-                  GestureDetector(
-                    onTap: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Settings')),
-                      );
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.all(15),
-                      decoration: BoxDecoration(
-                        color: Colors.white12,
-                        borderRadius: BorderRadius.circular(50),
-                      ),
-                      child: const Icon(
-                        Icons.settings,
-                        color: Colors.purpleAccent,
-                        size: 24,
-                      ),
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
-        ),
-      ],
+
+          Positioned(
+            top: 60,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Text(
+                _isLive ? "LIVE • $_fps fps" : "GESTURE AI",
+                style: TextStyle(
+                  color: _isLive ? Colors.redAccent : Colors.cyanAccent,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

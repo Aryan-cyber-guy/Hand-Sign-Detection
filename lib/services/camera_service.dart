@@ -3,132 +3,190 @@ import 'package:flutter/foundation.dart';
 
 class CameraService {
   CameraController? _controller;
-  List<CameraDescription>? _cameras;
+  List<CameraDescription> _cameras = [];
+  CameraDescription? _currentCamera;
 
   CameraController? get controller => _controller;
-  List<CameraDescription>? get cameras => _cameras;
-  bool get isCameraInitialized => _controller != null && _controller!.value.isInitialized;
+  CameraDescription? get currentCamera => _currentCamera;
 
-  /// Initializes available cameras
-  Future<List<CameraDescription>> initializeCameras() async {
-    try {
+  bool get isCameraInitialized =>
+      _controller != null && _controller!.value.isInitialized;
+
+  bool get isFrontCamera =>
+      _currentCamera?.lensDirection == CameraLensDirection.front;
+
+  bool get isStreamingImages => _controller?.value.isStreamingImages ?? false;
+
+  // ─────────────────────────────────────────────
+  // Fetch cameras
+  // ─────────────────────────────────────────────
+
+  Future<void> _fetchCameras() async {
+    if (_cameras.isEmpty) {
       _cameras = await availableCameras();
-      return _cameras ?? [];
-    } catch (e) {
-      throw Exception('Error initializing cameras: $e');
+      print("DEBUG: Found ${_cameras.length} cameras");
     }
   }
 
-  /// Selects and initializes a camera
-  Future<void> selectCamera(CameraDescription camera) async {
-    try {
-      await _controller?.dispose();
+  // ─────────────────────────────────────────────
+  // Init front camera
+  // ─────────────────────────────────────────────
 
-      _controller = CameraController(
-        camera,
-        ResolutionPreset.high,
-        enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.jpeg,
-      );
-
-      await _controller!.initialize();
-      debugPrint('Camera initialized successfully');
-    } catch (e) {
-      throw Exception('Error selecting camera: $e');
-    }
-  }
-
-  /// Captures a photo and returns the file path
-  Future<XFile?> takePicture() async {
-    try {
-      if (!isCameraInitialized) {
-        throw Exception('Camera is not initialized');
-      }
-
-      final image = await _controller!.takePicture();
-      return image;
-    } catch (e) {
-      throw Exception('Error taking picture: $e');
-    }
-  }
-
-  /// Gets the front camera for gesture detection
   Future<void> initializeFrontCamera() async {
-    try {
-      await initializeCameras();
+    await _fetchCameras();
 
-      if (_cameras == null || _cameras!.isEmpty) {
-        throw Exception('No cameras available');
+    final cam = _cameras.firstWhere(
+          (c) => c.lensDirection == CameraLensDirection.front,
+      orElse: () => _cameras.first,
+    );
+
+    await _initWith(cam);
+  }
+
+  // ─────────────────────────────────────────────
+  // Init back camera
+  // ─────────────────────────────────────────────
+
+  Future<void> initializeBackCamera() async {
+    await _fetchCameras();
+
+    final cam = _cameras.firstWhere(
+          (c) => c.lensDirection == CameraLensDirection.back,
+      orElse: () => _cameras.first,
+    );
+
+    await _initWith(cam);
+  }
+
+  // ─────────────────────────────────────────────
+  // Init selected camera
+  // ─────────────────────────────────────────────
+
+  Future<void> _initWith(CameraDescription description) async {
+    print("DEBUG: _initWith: ${description.lensDirection}");
+
+    if (_controller != null) {
+      if (!kIsWeb && _controller!.value.isStreamingImages) {
+        await _controller!.stopImageStream();
       }
 
-      final frontCamera = _cameras!.firstWhere(
-        (camera) => camera.lensDirection == CameraLensDirection.front,
-        orElse: () => _cameras!.first,
+      await _controller!.dispose();
+      _controller = null;
+    }
+
+    _currentCamera = description;
+
+    _controller = CameraController(
+      description,
+      ResolutionPreset.medium,
+      enableAudio: false,
+      imageFormatGroup: ImageFormatGroup.jpeg,
+    );
+
+    await _controller!.initialize();
+
+    print("DEBUG: CameraController initialized");
+
+    try {
+      await _controller!.setFocusMode(
+        isFrontCamera ? FocusMode.locked : FocusMode.auto,
       );
-
-      await selectCamera(frontCamera);
     } catch (e) {
-      throw Exception('Error initializing front camera: $e');
+      print("DEBUG: setFocusMode not supported — ignoring: $e");
     }
-  }
 
-  /// Starts the camera preview
-  Future<void> startCameraPreview() async {
     try {
-      if (!isCameraInitialized) {
-        throw Exception('Camera is not initialized');
-      }
-      // Preview starts automatically after initialization
-      debugPrint('Camera preview started');
-    } catch (e) {
-      throw Exception('Error starting camera preview: $e');
+      await _controller!.setFlashMode(FlashMode.off);
+    } catch (_) {}
+  }
+
+  // ─────────────────────────────────────────────
+  // Start image stream
+  // ─────────────────────────────────────────────
+
+  Future<void> startImageStream(
+      void Function(CameraImage image) onFrame) async {
+    if (_controller == null || !_controller!.value.isInitialized) {
+      print("ERROR: Camera not initialized");
+      return;
+    }
+
+    if (_controller!.value.isStreamingImages) {
+      print("DEBUG: Stream already running");
+      return;
+    }
+
+    if (kIsWeb) {
+      print("DEBUG: Web detected — image stream not supported");
+      return;
+    }
+
+    await _controller!.startImageStream(onFrame);
+
+    print("DEBUG: Image stream started");
+  }
+
+  // ─────────────────────────────────────────────
+  // Stop image stream
+  // ─────────────────────────────────────────────
+
+  Future<void> stopImageStream() async {
+    if (kIsWeb) {
+      print("DEBUG: Web mode — no stream to stop");
+      return;
+    }
+
+    if (_controller == null) return;
+
+    if (_controller!.value.isStreamingImages) {
+      await _controller!.stopImageStream();
+      print("DEBUG: Image stream stopped");
     }
   }
 
-  /// Stops the camera preview
-  Future<void> stopCameraPreview() async {
-    try {
-      if (_controller != null && isCameraInitialized) {
-        // Preview stops when camera is disposed
-        debugPrint('Camera preview stopped');
-      }
-    } catch (e) {
-      throw Exception('Error stopping camera preview: $e');
-    }
-  }
+  // ─────────────────────────────────────────────
+  // Flash
+  // ─────────────────────────────────────────────
 
-  /// Sets the flash mode
   Future<void> setFlashMode(FlashMode mode) async {
+    if (_controller == null || !isCameraInitialized) return;
+
     try {
-      if (!isCameraInitialized) {
-        throw Exception('Camera is not initialized');
-      }
       await _controller!.setFlashMode(mode);
     } catch (e) {
-      throw Exception('Error setting flash mode: $e');
+      print("ERROR setFlashMode: $e");
     }
   }
 
-  /// Zooms the camera
-  Future<void> setZoom(double zoom) async {
+  // ─────────────────────────────────────────────
+  // Capture image for web/manual detection
+  // ─────────────────────────────────────────────
+
+  Future<XFile?> captureImage() async {
+    if (_controller == null || !_controller!.value.isInitialized) {
+      return null;
+    }
+
     try {
-      if (!isCameraInitialized) {
-        throw Exception('Camera is not initialized');
-      }
-      await _controller!.setZoomLevel(zoom);
+      return await _controller!.takePicture();
     } catch (e) {
-      throw Exception('Error setting zoom: $e');
+      print("ERROR captureImage: $e");
+      return null;
     }
   }
 
-  /// Disposes the camera controller
+  // ─────────────────────────────────────────────
+  // Dispose
+  // ─────────────────────────────────────────────
+
   Future<void> dispose() async {
-    try {
-      await _controller?.dispose();
+    if (_controller != null) {
+      if (!kIsWeb && _controller!.value.isStreamingImages) {
+        await _controller!.stopImageStream();
+      }
+
+      await _controller!.dispose();
       _controller = null;
-      debugPrint('Camera disposed');
-    } catch (e) {
-      debugPrint('Error disposing camera: $e');
     }
   }
 }

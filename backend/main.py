@@ -13,8 +13,8 @@ from fastapi.responses import JSONResponse
 
 import mediapipe as mp
 
-from config import landmarker
-from utils import process_frame, reset_user, get_features
+from config import landmarker, MAX_FRAMES
+from utils import process_frame, reset_user, get_features, user_sequences
 from fastapi.middleware.cors import CORSMiddleware
 
 # Configure logging
@@ -63,7 +63,19 @@ async def predict_frame(
 
         logger.info(f"user={user_id}, prediction={prediction}")
 
-        return JSONResponse({"prediction": prediction})
+        # Determine if hand is visible
+        hand_visible = bool(result.hand_landmarks)
+
+        frame_count = len(user_sequences.get(user_id, []))
+
+        buffer_ready = frame_count >= MAX_FRAMES
+
+        return JSONResponse({
+            "prediction": prediction,
+            "hand_visible": hand_visible,
+            "buffer_ready": buffer_ready,
+            "frame_count": frame_count
+        })
 
     except HTTPException:
         raise
@@ -71,11 +83,11 @@ async def predict_frame(
         logger.error(f"Error in predict_frame: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.post("/reset-user")
+@app.post("/reset-session")
 async def reset_user_endpoint(user_id: str = Form(...)):
     """Reset user sequence and prediction state."""
     reset_user(user_id)
-    return JSONResponse({"message": f"User {user_id} reset"})
+    return {"status": "reset"}
 
 @app.get("/")
 def home():

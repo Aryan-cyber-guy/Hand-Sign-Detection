@@ -9,6 +9,8 @@ import 'package:handsingdetection/services/api_service.dart';
 import 'package:handsingdetection/services/camera_service.dart';
 import 'package:handsingdetection/theme/haptic_provider.dart';
 
+import '../theme/app_theme.dart';
+
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
 
@@ -290,20 +292,82 @@ class _CameraScreenState extends State<CameraScreen>
           Positioned(
             top: 40,
             left: 20,
-            child: FloatingActionButton.small(
-              backgroundColor: Colors.black54,
-              onPressed: () => Navigator.pop(context),
-              child: const Icon(Icons.arrow_back),
+            child: GestureDetector(
+              onTap: () => Navigator.pop(context),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    colors: [
+                      context.colors.bgCard.withOpacity(0.9),
+                      context.colors.bgCard.withOpacity(0.6),
+                    ],
+                  ),
+                  border: Border.all(
+                    color: context.colors.border.withOpacity(0.6),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.2),
+                      blurRadius: 10,
+                    ),
+                  ],
+                ),
+                child: Icon(
+                  Icons.arrow_back_ios_new,
+                  size: 18,
+                  color: context.colors.textPrimary,
+                ),
+              ),
             ),
           ),
 
           Positioned(
             top: 40,
             right: 20,
-            child: FloatingActionButton.small(
-              backgroundColor: Colors.black54,
-              onPressed: _toggleFlash,
-              child: Icon(_isFlashOn ? Icons.flash_on : Icons.flash_off),
+            child: GestureDetector(
+              onTap: _toggleFlash,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    colors: _isFlashOn
+                        ? [
+                      context.colors.accent,
+                      context.colors.accent.withOpacity(0.7),
+                    ]
+                        : [
+                      context.colors.bgCard.withOpacity(0.9),
+                      context.colors.bgCard.withOpacity(0.6),
+                    ],
+                  ),
+                  border: Border.all(
+                    color: context.colors.border.withOpacity(0.6),
+                  ),
+                  boxShadow: _isFlashOn
+                      ? [
+                    BoxShadow(
+                      color: context.colors.accent.withOpacity(0.4),
+                      blurRadius: 12,
+                      spreadRadius: 1,
+                    ),
+                  ]
+                      : [],
+                ),
+                child: Icon(
+                  _isFlashOn ? Icons.flash_on : Icons.flash_off,
+                  color: _isFlashOn
+                      ? Colors.white
+                      : context.colors.textSecondary,
+                  size: 22,
+                ),
+              ),
             ),
           ),
 
@@ -333,10 +397,38 @@ class _CameraScreenState extends State<CameraScreen>
             left: 40,
             child: RotationTransition(
               turns: _switchRotAnim,
-              child: FloatingActionButton(
-                backgroundColor: Colors.black54,
-                onPressed: _switchCamera,
-                child: const Icon(Icons.flip_camera_ios),
+              child: GestureDetector(
+                onTap: _switchCamera,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 250),
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      colors: [
+                        context.colors.bgCard.withOpacity(0.9),
+                        context.colors.bgCard.withOpacity(0.6),
+                      ],
+                    ),
+                    border: Border.all(
+                      color: context.colors.border.withOpacity(0.6),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: context.colors.isDark
+                            ? Colors.black.withOpacity(0.4)
+                            : Colors.black.withOpacity(0.15),
+                        blurRadius: 12,
+                      ),
+                    ],
+                  ),
+                  child: Icon(
+                    Icons.flip_camera_ios,
+                    color: context.colors.textPrimary,
+                    size: 24,
+                  ),
+                ),
               ),
             ),
           ),
@@ -345,23 +437,89 @@ class _CameraScreenState extends State<CameraScreen>
             bottom: 50,
             right: 40,
             child: ScaleTransition(
-              scale: _pulseAnim,
-              child: FloatingActionButton.large(
-                backgroundColor: _isLive ? Colors.red : Colors.green,
-                onPressed: _toggleStream,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(_isLive ? Icons.stop : Icons.play_arrow),
-                    Text(
-                      _isLive ? "LIVE" : "START",
-                      style: const TextStyle(fontSize: 10),
-                    ),
-                  ],
+              scale: _isLive ? _pulseAnim : const AlwaysStoppedAnimation(1),
+              child: GestureDetector(
+                onTap: _toggleStream,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 250),
+                  width: 72,
+                  height: 72,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+
+                    // 🔥 KEY FIX: Different style for light mode
+                    color: !context.colors.isDark
+                        ? (_isLive
+                        ? context.colors.accent
+                        : context.colors.bgCard)
+                        : null,
+
+                    gradient: context.colors.isDark
+                        ? LinearGradient(
+                      colors: _isLive
+                          ? [
+                        context.colors.accent,
+                        context.colors.accent.withOpacity(0.7),
+                      ]
+                          : [
+                        context.colors.gradStart,
+                        context.colors.gradEnd,
+                      ],
+                    )
+                        : null,
+
+                    border: !context.colors.isDark
+                        ? Border.all(
+                      color: context.colors.border.withOpacity(0.6),
+                    )
+                        : null,
+
+                    boxShadow: [
+                      BoxShadow(
+                        color: _isLive
+                            ? context.colors.accent.withOpacity(0.35)
+                            : Colors.black.withOpacity(
+                          context.colors.isDark ? 0.4 : 0.15,
+                        ),
+                        blurRadius: _isLive ? 18 : 10,
+                        spreadRadius: _isLive ? 2 : 0,
+                      ),
+                    ],
+                  ),
+
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        _isLive
+                            ? Icons.sensors_off_rounded
+                            : Icons.sensors_rounded,
+                        color: context.colors.isDark
+                            ? Colors.white
+                            : (_isLive
+                            ? Colors.white
+                            : context.colors.textPrimary),
+                        size: 26,
+                      ),
+                      Text(
+                        _isLive ? "LIVE" : "START",
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: context.colors.isDark
+                              ? Colors.white
+                              : (_isLive
+                              ? Colors.white
+                              : context.colors.textPrimary),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
+
 
           Positioned(
             top: 60,

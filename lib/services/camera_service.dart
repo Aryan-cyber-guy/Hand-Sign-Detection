@@ -1,10 +1,14 @@
+import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
+import 'package:image/image.dart' as img;
 
 class CameraService {
   CameraController? _controller;
   List<CameraDescription> _cameras = [];
   CameraDescription? _currentCamera;
+
+  int _frameCount = 0;
 
   CameraController? get controller => _controller;
   CameraDescription? get currentCamera => _currentCamera;
@@ -15,61 +19,26 @@ class CameraService {
   bool get isFrontCamera =>
       _currentCamera?.lensDirection == CameraLensDirection.front;
 
-  bool get isStreamingImages => _controller?.value.isStreamingImages ?? false;
+  bool get isStreamingImages =>
+      _controller?.value.isStreamingImages ?? false;
 
-  // ─────────────────────────────────────────────
+  // ─────────────────────────────
   // Fetch cameras
-  // ─────────────────────────────────────────────
-
+  // ─────────────────────────────
   Future<void> _fetchCameras() async {
     if (_cameras.isEmpty) {
       _cameras = await availableCameras();
-      print("DEBUG: Found ${_cameras.length} cameras");
     }
   }
 
-  // ─────────────────────────────────────────────
-  // Init front camera
-  // ─────────────────────────────────────────────
-
-  Future<void> initializeFrontCamera() async {
-    await _fetchCameras();
-
-    final cam = _cameras.firstWhere(
-          (c) => c.lensDirection == CameraLensDirection.front,
-      orElse: () => _cameras.first,
-    );
-
-    await _initWith(cam);
-  }
-
-  // ─────────────────────────────────────────────
-  // Init back camera
-  // ─────────────────────────────────────────────
-
-  Future<void> initializeBackCamera() async {
-    await _fetchCameras();
-
-    final cam = _cameras.firstWhere(
-          (c) => c.lensDirection == CameraLensDirection.back,
-      orElse: () => _cameras.first,
-    );
-
-    await _initWith(cam);
-  }
-
-  // ─────────────────────────────────────────────
-  // Init selected camera
-  // ─────────────────────────────────────────────
-
+  // ─────────────────────────────
+  // Init camera
+  // ─────────────────────────────
   Future<void> _initWith(CameraDescription description) async {
-    print("DEBUG: _initWith: ${description.lensDirection}");
-
     if (_controller != null) {
       if (!kIsWeb && _controller!.value.isStreamingImages) {
         await _controller!.stopImageStream();
       }
-
       await _controller!.dispose();
       _controller = null;
     }
@@ -78,113 +47,114 @@ class CameraService {
 
     _controller = CameraController(
       description,
-      ResolutionPreset.medium,
+      ResolutionPreset.low,
       enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.jpeg,
+      imageFormatGroup: ImageFormatGroup.yuv420,
     );
 
     await _controller!.initialize();
-
-    print("DEBUG: CameraController initialized");
-
-    try {
-      await _controller!.setFocusMode(
-        isFrontCamera ? FocusMode.locked : FocusMode.auto,
-      );
-    } catch (e) {
-      print("DEBUG: setFocusMode not supported — ignoring: $e");
-    }
-
-    try {
-      await _controller!.setFlashMode(FlashMode.off);
-    } catch (_) {}
   }
 
-  // ─────────────────────────────────────────────
-  // Start image stream
-  // ─────────────────────────────────────────────
+  Future<void> initializeFrontCamera() async {
+    await _fetchCameras();
+    final cam = _cameras.firstWhere(
+          (c) => c.lensDirection == CameraLensDirection.front,
+      orElse: () => _cameras.first,
+    );
+    await _initWith(cam);
+  }
 
+  Future<void> initializeBackCamera() async {
+    await _fetchCameras();
+    final cam = _cameras.firstWhere(
+          (c) => c.lensDirection == CameraLensDirection.back,
+      orElse: () => _cameras.first,
+    );
+    await _initWith(cam);
+  }
+
+  // ─────────────────────────────
+  // START STREAM (JPEG output)
+  // ─────────────────────────────
   Future<void> startImageStream(
-      void Function(CameraImage image) onFrame) async {
-    if (_controller == null || !_controller!.value.isInitialized) {
-      print("ERROR: Camera not initialized");
-      return;
-    }
+      Future<void> Function(Uint8List jpegBytes) onFrame) async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
 
-    if (_controller!.value.isStreamingImages) {
-      print("DEBUG: Stream already running");
-      return;
-    }
+    if (_controller!.value.isStreamingImages) return;
 
-    if (kIsWeb) {
-      print("DEBUG: Web detected — image stream not supported");
-      return;
-    }
+    await _controller!.startImageStream((CameraImage image) async {
+      _frameCount++;
 
-    await _controller!.startImageStream(onFrame);
+      if (_frameCount % 5 != 0) return; // skip frames
 
-    print("DEBUG: Image stream started");
+      try {
+        final jpeg = _convertToJpeg(image);
+        await onFrame(jpeg);
+      } catch (e) {
+        print("Frame error: $e");
+      }
+    });
   }
 
-  // ─────────────────────────────────────────────
-  // Stop image stream
-  // ─────────────────────────────────────────────
+  // ─────────────────────────────
+  // FIXED JPEG conversion
+  // ─────────────────────────────
+  Uint8List _convertToJpeg(CameraImage image) {
+    final width = image.width;
+    final height = image.height;
 
-  Future<void> stopImageStream() async {
-    if (kIsWeb) {
-      print("DEBUG: Web mode — no stream to stop");
-      return;
+    final img.Image imgBuffer = img.Image(width: width, height: height);
+    final plane = image.planes[0];
+
+    for (int i = 0; i < width * height; i++) {
+      final pixel = plane.bytes[i];
+
+      final x = i % width;
+      final y = i ~/ width;
+
+      // ✅ FIX (no getColor, no data[])
+      imgBuffer.setPixelRgb(x, y, pixel, pixel, pixel);
     }
 
-    if (_controller == null) return;
+    final resized = img.copyResize(imgBuffer, width: 224, height: 224);
 
-    if (_controller!.value.isStreamingImages) {
-      await _controller!.stopImageStream();
-      print("DEBUG: Image stream stopped");
-    }
+    return Uint8List.fromList(img.encodeJpg(resized, quality: 70));
   }
 
-  // ─────────────────────────────────────────────
-  // Flash
-  // ─────────────────────────────────────────────
-
-  Future<void> setFlashMode(FlashMode mode) async {
-    if (_controller == null || !isCameraInitialized) return;
-
-    try {
-      await _controller!.setFlashMode(mode);
-    } catch (e) {
-      print("ERROR setFlashMode: $e");
-    }
-  }
-
-  // ─────────────────────────────────────────────
-  // Capture image for web/manual detection
-  // ─────────────────────────────────────────────
+  // ─────────────────────────────
+  // EXTRA FUNCTIONS (fix errors)
+  // ─────────────────────────────
 
   Future<XFile?> captureImage() async {
-    if (_controller == null || !_controller!.value.isInitialized) {
-      return null;
-    }
+    if (_controller == null || !_controller!.value.isInitialized) return null;
 
     try {
       return await _controller!.takePicture();
     } catch (e) {
-      print("ERROR captureImage: $e");
+      print("capture error: $e");
       return null;
     }
   }
 
-  // ─────────────────────────────────────────────
-  // Dispose
-  // ─────────────────────────────────────────────
+  Future<void> setFlashMode(FlashMode mode) async {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+
+    try {
+      await _controller!.setFlashMode(mode);
+    } catch (e) {
+      print("flash error: $e");
+    }
+  }
+
+  Future<void> stopImageStream() async {
+    if (_controller != null && _controller!.value.isStreamingImages) {
+      await _controller!.stopImageStream();
+    }
+  }
 
   Future<void> dispose() async {
     if (_controller != null) {
-      if (!kIsWeb && _controller!.value.isStreamingImages) {
-        await _controller!.stopImageStream();
-      }
-
+      await stopImageStream();
       await _controller!.dispose();
       _controller = null;
     }

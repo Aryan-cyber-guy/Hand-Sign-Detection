@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import 'package:handsingdetection/services/api_service.dart';
 import 'package:handsingdetection/services/camera_service.dart';
 import 'package:handsingdetection/theme/haptic_provider.dart';
+import 'package:image/image.dart' as img;
 
 import '../theme/app_theme.dart';
 
@@ -39,7 +40,7 @@ class _CameraScreenState extends State<CameraScreen>
   bool _bufferReady = false;
   int _frameCount = 0;
 
-  static const int _frameIntervalMs = 700;
+  static const int _frameIntervalMs = 900;
   DateTime _lastFrameSent = DateTime(2000);
 
   int _fps = 0;
@@ -90,6 +91,8 @@ class _CameraScreenState extends State<CameraScreen>
     _pulseCtrl.dispose();
     super.dispose();
   }
+
+
 
   Future<void> _initCamera() async {
     await _cameraService.initializeFrontCamera();
@@ -185,7 +188,28 @@ class _CameraScreenState extends State<CameraScreen>
     });
   }
 
-  void _onCameraFrame(CameraImage image) async {
+  Uint8List _convertToJpeg(CameraImage image) {
+    final width = image.width;
+    final height = image.height;
+
+    final img.Image imgBuffer = img.Image(width: width, height: height);
+
+    final plane = image.planes[0];
+
+    // Fast grayscale conversion
+    for (int i = 0; i < width * height; i++) {
+      final pixel = plane.bytes[i];
+      imgBuffer.setPixelRgb(i % width, i ~/ width, pixel, pixel, pixel);
+    }
+
+    // 🔥 Resize (MOST IMPORTANT)
+    final resized = img.copyResize(imgBuffer, width: 224, height: 224);
+
+    // 🔥 Compress
+    return Uint8List.fromList(img.encodeJpg(resized, quality: 70));
+  }
+
+  Future<void> _onCameraFrame(Uint8List jpegBytes) async {
     final haptic = context.read<HapticProvider>();
 
     _fpsRawCount++;
@@ -201,10 +225,8 @@ class _CameraScreenState extends State<CameraScreen>
     _isSendingFrame = true;
 
     try {
-      Uint8List jpeg = image.planes[0].bytes;
-
       final result = await ApiService.predictFrame(
-        jpegBytes: jpeg,
+        jpegBytes: jpegBytes,
         userId: _userId,
       );
 
@@ -226,9 +248,11 @@ class _CameraScreenState extends State<CameraScreen>
           _frameCount = result['frame_count'] ?? 0;
         });
       }
-    } catch (_) {}
-
-    _isSendingFrame = false;
+    } catch (e) {
+      print("Frame error: $e");
+    } finally {
+      _isSendingFrame = false;
+    }
   }
 
   Future<void> _captureAndSendWeb() async {

@@ -4,20 +4,15 @@ import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 
 class ApiService {
-  static const String baseUrl =
-      'https://hand-sign-detection-production.up.railway.app';
+  // static const String baseUrl = 'https://hand-sign-detection-production.up.railway.app';
+  static const String baseUrl = 'http://127.0.0.1:8000';
 
-  // 🔥 Increased timeout
-  static const int _frameTimeoutSeconds = 15;
-
-  // 🔥 Prevent parallel requests
   static bool _isSending = false;
 
   static Future<Map<String, dynamic>?> predictFrame({
     required List<int> jpegBytes,
     required String userId,
   }) async {
-    // 🚨 Skip if previous request still running
     if (_isSending) return null;
 
     _isSending = true;
@@ -36,57 +31,45 @@ class ApiService {
           ),
         );
 
-      final streamed = await request.send().timeout(
-        const Duration(seconds: _frameTimeoutSeconds),
-      );
-
-      final response = await http.Response.fromStream(streamed);
+      final responseStream = await request.send();
+      final response = await http.Response.fromStream(responseStream);
 
       if (response.statusCode == 200) {
-        final body = jsonDecode(response.body) as Map<String, dynamic>;
+        final body = jsonDecode(response.body);
 
         return {
-          'prediction': body['prediction'] ?? 'Detecting...',
+          'prediction': body['prediction'] ?? '',
           'hand_visible': body['hand_visible'] ?? false,
           'buffer_ready': body['buffer_ready'] ?? false,
           'frame_count': body['frame_count'] ?? 0,
         };
       } else {
-        print("ERROR ${response.statusCode}: ${response.body}");
-        return null;
+        print("Server error: ${response.statusCode}");
       }
     } catch (e) {
-      print("ERROR in predictFrame: $e");
-      return null;
+      print("API error: $e");
     } finally {
-      _isSending = false; // ✅ always reset
+      _isSending = false;
     }
-  }
 
-  // RESET
-  static Future<void> resetSession(String userId) async {
-    try {
-      final uri = Uri.parse('$baseUrl/reset-session');
-      await http.post(uri, body: {'user_id': userId});
-    } catch (e) {
-      print("resetSession error: $e");
+
+    return null;
     }
-  }
 
-  // HEALTH CHECK
   static Future<bool> checkServerHealth() async {
     try {
       final response = await http
           .get(Uri.parse('$baseUrl/'))
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body);
         return body['status'] == 'ok';
       }
-      return false;
-    } catch (_) {
-      return false;
+    } catch (e) {
+      print("Health check error: $e");
     }
+
+    return false;
   }
-}
+  }
